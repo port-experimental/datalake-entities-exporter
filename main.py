@@ -4,8 +4,8 @@ from typing import Dict, Any
 from loguru import logger
 import os
 from dotenv import load_dotenv
-from port_client import PortClient
-from bigquery_client import BigQueryClient
+from clients.port import PortClient
+from clients.bigquery import BigQueryClient
 
 load_dotenv()
 
