@@ -1,0 +1,18 @@
+{
+    "blueprints": [
+        {
+            "identifier": "bitbucketService",
+            "search_query": {
+                "combinator": "and",
+                "rules": []
+            }
+        },
+        {
+            "identifier": "githubService",
+            "search_query": {
+                "combinator": "and",
+                "rules": []
+            }
+        }
+    ]
+} 
