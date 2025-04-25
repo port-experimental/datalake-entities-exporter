@@ -1,11 +1,18 @@
-from typing import Dict, Any, List, Optional, Set
-from google.cloud import bigquery   # type: ignore
+from typing import Dict, Any, List, Optional, Set, Literal
+from google.cloud import bigquery
+from google.oauth2 import service_account
 from loguru import logger
 import json
 
 class BigQueryClient:
-    def __init__(self, project_id: str, dataset_id: str, auto_migrate: str = "weak"):
-        self.client = bigquery.Client(project=project_id)
+    def __init__(
+        self, 
+        project_id: str, 
+        dataset_id: str, 
+        credentials: service_account.Credentials,
+        auto_migrate: Literal["weak", "balanced", "hard"] = "weak",
+    ):
+        self.client = bigquery.Client(project=project_id, credentials=credentials)
         self.dataset_id = dataset_id
         self.dataset_ref = bigquery.DatasetReference(project_id, dataset_id)
         self.auto_migrate = auto_migrate.lower()
@@ -208,14 +215,6 @@ class BigQueryClient:
             table = self.client.create_table(table)
             logger.info(f"Created new table {table_id}")
 
-    def _flush_streaming_buffer(self, table_ref: bigquery.TableReference) -> None:
-        """Flush the streaming buffer for a table."""
-        try:
-            self.client.flush_rows(table_ref)
-            logger.info(f"Successfully flushed streaming buffer for {table_ref.table_id}")
-        except Exception as e:
-            logger.warning(f"Could not flush streaming buffer for {table_ref.table_id}: {str(e)}")
-
     def insert_entities(self, table_id: str, entities: List[Dict[str, Any]]) -> None:
         table_ref = self.dataset_ref.table(table_id)
         table = self.client.get_table(table_ref)
@@ -289,12 +288,8 @@ class BigQueryClient:
             else:
                 logger.info(f"Successfully inserted {len(rows_to_insert)} rows into {table_id}")
 
-        # Handle updates with retry logic for streaming buffer
+        # Handle updates
         if rows_to_update:
-            import time
-            max_retries = 3
-            retry_delay = 5  # seconds
-            
             for row in rows_to_update:
                 identifier = row.pop("identifier")
                 update_query = f"""
@@ -325,20 +320,10 @@ class BigQueryClient:
                     query_parameters=query_parameters
                 )
                 
-                # Retry logic for streaming buffer
-                for attempt in range(max_retries):
-                    try:
-                        # Try to flush the streaming buffer before update
-                        self._flush_streaming_buffer(table_ref)
-                        query_job = self.client.query(update_query, job_config=job_config)
-                        query_job.result()  # Wait for the query to complete
-                        break  # Success, exit retry loop
-                    except Exception as e:
-                        if "streaming buffer" in str(e) and attempt < max_retries - 1:
-                            logger.warning(f"Streaming buffer conflict for {identifier}, retrying in {retry_delay} seconds...")
-                            time.sleep(retry_delay)
-                            retry_delay *= 2  # Exponential backoff
-                        else:
-                            logger.error(f"Error updating row with identifier {identifier}: {str(e)}")
-                            break
-            logger.info(f"Completed update attempts for {len(rows_to_update)} rows in {table_id}")
+                try:
+                    query_job = self.client.query(update_query, job_config=job_config)
+                    query_job.result()  # Wait for the query to complete
+                except Exception as e:
+                    logger.error(f"Error updating row with identifier {identifier}: {str(e)}")
+            
+            logger.info(f"Completed updates for {len(rows_to_update)} rows in {table_id}")

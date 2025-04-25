@@ -3,19 +3,18 @@ from datetime import datetime, timedelta
 from typing import Dict, Any, Tuple
 import httpx
 from loguru import logger
-import os
 from dotenv import load_dotenv
 
 load_dotenv()
 
 class PortClient:
-    def __init__(self):
-        self.port_client_id = os.getenv("PORT_CLIENT_ID")
-        self.port_client_secret = os.getenv("PORT_CLIENT_SECRET")
-        self.port_api_url = os.getenv("PORT_API_URL", "https://api.getport.io/v1")
-        self.port_access_token = None
-        self.token_expiry_time = datetime.now()
-        self.port_headers = {}
+    def __init__(self, port_client_id: str, port_client_secret: str, port_api_url: str = "https://api.getport.io/v1"):
+        self.port_client_id = port_client_id
+        self.port_client_secret = port_client_secret
+        self.port_api_url = port_api_url
+        self.port_access_token: str | None = None
+        self.token_expiry_time: datetime = datetime.now()
+        self.port_headers: dict[str, str] = {}
         self.client = httpx.AsyncClient(timeout=httpx.Timeout(60))
 
     async def get_access_token(self) -> Tuple[str, datetime]:
@@ -49,7 +48,7 @@ class PortClient:
             "query": search_query
         })
         response.raise_for_status()
-        response_data = response.json()
+        response_data: dict[str, Any] = response.json()
         logger.debug(f"Search response for {blueprint_identifier}: {json.dumps(response_data, indent=2)}")
         return response_data
 
@@ -58,6 +57,6 @@ class PortClient:
         url = f"{self.port_api_url}/blueprints/{blueprint_identifier}"
         response = await self.client.get(url, headers=self.port_headers)
         response.raise_for_status()
-        response_data = response.json()["blueprint"]
+        response_data: dict[str, Any] = response.json()["blueprint"]
         logger.debug(f"Blueprint response for {blueprint_identifier}: {json.dumps(response_data, indent=2)}")
         return response_data

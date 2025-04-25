@@ -1,27 +1,20 @@
 import json
 import asyncio
-from typing import Dict, Any
 from loguru import logger
-import os
-from dotenv import load_dotenv
 from clients.port import PortClient
 from clients.bigquery import BigQueryClient
+from settings import settings, BlueprintConfig
 
-load_dotenv()
 
-async def load_config() -> Dict[str, Any]:
-    with open("config.json", "r") as f:
-        config_data = json.load(f)
-        logger.debug(f"Loaded config: {json.dumps(config_data, indent=2)}")
-        return config_data
+
 
 async def export_blueprint(
     port_client: PortClient,
     bigquery_client: BigQueryClient,
-    blueprint_config: Dict[str, Any]
+    blueprint_config: BlueprintConfig
 ) -> None:
-    blueprint_identifier = blueprint_config["identifier"]
-    search_query = blueprint_config["search_query"]
+    blueprint_identifier = blueprint_config.identifier
+    search_query = blueprint_config.search_query
     
     logger.info(f"Exporting blueprint: {blueprint_identifier}")
     
@@ -34,7 +27,7 @@ async def export_blueprint(
     bigquery_client.create_or_update_table(blueprint_identifier, schema)
     
     # Search and export entities
-    response = await port_client.search_entities(blueprint_identifier, search_query)
+    response = await port_client.search_entities(blueprint_identifier, search_query.model_dump())
     entities = response.get("entities", [])
     
     if entities:
@@ -44,20 +37,27 @@ async def export_blueprint(
     else:
         logger.info(f"No entities found for blueprint {blueprint_identifier}")
 
-async def main():
-    # Load configuration
-    config_data = await load_config()
-    
+async def main() -> None:
     # Initialize clients
-    port_client = PortClient()
-    bigquery_client = BigQueryClient(
-        project_id=os.getenv("BIGQUERY_PROJECT_ID"),
-        dataset_id=os.getenv("BIGQUERY_DATASET_ID"),
-        auto_migrate=os.getenv("AUTO_MIGRATE", "weak")
+    port_client = PortClient(
+        port_client_id=settings.PORT_CLIENT_ID,
+        port_client_secret=settings.PORT_CLIENT_SECRET,
+        port_api_url=settings.PORT_API_URL
     )
     
+    # Initialize BigQuery client with settings
+    bigquery_client = BigQueryClient(
+        project_id=settings.BIGQUERY_PROJECT_ID,
+        dataset_id=settings.BIGQUERY_DATASET_ID,
+        auto_migrate=settings.AUTO_MIGRATE,
+        credentials=settings.get_google_credentials()
+    )
+    
+    # Get entities config
+    config_data = settings.get_entities_config()
+    
     # Export each blueprint
-    for blueprint_config in config_data["blueprints"]:
+    for blueprint_config in config_data.blueprints:
         await export_blueprint(port_client, bigquery_client, blueprint_config)
 
 if __name__ == "__main__":
