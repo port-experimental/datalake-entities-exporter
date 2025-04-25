@@ -24,9 +24,47 @@ make install
   - `weak`: No schema changes to existing tables
   - `balanced`: Adds new fields to existing tables
   - `hard`: Adds new fields and removes fields not in the new schema
-- `GOOGLE_APPLICATION_CREDENTIALS`: Path to your Google Cloud service account key file
-  OR
-- `GOOGLE_APPLICATION_CREDENTIALS_JSON`: Your Google Cloud service account key as JSON string
+
+### Entities Configuration
+
+You can provide the entities configuration in two ways:
+
+1. **JSON String**:
+   - Set the `ENTITIES_CONFIG_JSON` environment variable with the configuration as a JSON string
+   ```json
+   {
+       "blueprints": [
+           {
+               "identifier": "service",
+               "search_query": {
+                   "combinator": "and",
+                   "rules": []
+               },
+               "include_entities": ["entity1", "entity2"],
+               "exclude_entities": ["entity3", "entity4"]
+           }
+       ]
+   }
+   ```
+
+2. **Config File**:
+   - Set the `ENTITIES_CONFIG` environment variable to the path of your config file
+   - The file should contain the same JSON structure as above
+
+Note: You only need to set one of these environment variables, not both. If both are set, `ENTITIES_CONFIG_JSON` takes precedence.
+
+#### Blueprint Configuration Options
+
+Each blueprint in the configuration can have the following options:
+
+- `identifier`: The identifier of the blueprint to export
+- `search_query`: The search query to filter entities
+  - `combinator`: Either "and" or "or" to combine rules
+  - `rules`: List of search rules to apply
+- `include_entities`: (Optional) List of entity identifiers to include in the export
+- `exclude_entities`: (Optional) List of entity identifiers to exclude from the export
+
+Note: If both `include_entities` and `exclude_entities` are specified, the `exclude_entities` list will be applied after the `include_entities` list.
 
 ### Google Cloud Authentication
 
@@ -48,21 +86,6 @@ The service account needs the following roles:
 
 Note: You only need to set one of these environment variables, not both. If both are set, `GOOGLE_APPLICATION_CREDENTIALS_JSON` takes precedence.
 
-4. Configure blueprints to export in `config.json`:
-```json
-{
-    "blueprints": [
-        {
-            "identifier": "service",
-            "search_query": {
-                "combinator": "and",
-                "rules": []
-            }
-        }
-    ]
-}
-```
-
 ## Usage
 
 Run the exporter:
@@ -78,13 +101,13 @@ AUTO_MIGRATE=hard make run
 ```
 
 The script will:
-1. Read the configuration from `config.json`
+1. Read the configuration from either the JSON string or config file
 2. For each blueprint:
    - Fetch the blueprint schema from Port
    - Create or update a BigQuery table with matching schema based on AUTO_MIGRATE mode
    - Search for entities using the configured query
-   - Export the entities to BigQuery
-   - Handle streaming buffer conflicts automatically with retries
+   - Export the entities to BigQuery, handling pagination automatically
+   - Show progress updates during export
 
 ## Schema Migration Modes
 
@@ -134,7 +157,8 @@ make check
 - Support for all Port data types
 - Configurable search queries for each blueprint
 - Automatic table creation and updates with configurable migration modes
-- Automatic handling of BigQuery streaming buffer conflicts
+- Automatic pagination handling for large result sets
+- Progress updates during export
 - Logging of export progress and errors
 
 ## Notes
@@ -143,5 +167,5 @@ make check
 - Tables are created with the same name as the blueprint identifier
 - Arrays and objects are stored as JSON strings in BigQuery
 - The script maintains the original data types where possible
-- When using balanced or hard modes, the script will automatically handle streaming buffer conflicts with retries
+- The script automatically handles pagination for large result sets
 - Updates to existing rows may be delayed due to BigQuery's streaming buffer 

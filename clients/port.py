@@ -1,11 +1,13 @@
 import json
 from datetime import datetime, timedelta
-from typing import Dict, Any, Tuple
+from typing import Any, AsyncGenerator, Dict, Tuple
+
 import httpx
-from loguru import logger
 from dotenv import load_dotenv
+from loguru import logger
 
 load_dotenv()
+
 
 class PortClient:
     def __init__(self, port_client_id: str, port_client_secret: str, port_api_url: str = "https://api.getport.io/v1"):
@@ -19,9 +21,7 @@ class PortClient:
 
     async def get_access_token(self) -> Tuple[str, datetime]:
         credentials = {"clientId": self.port_client_id, "clientSecret": self.port_client_secret}
-        token_response = await self.client.post(
-            f"{self.port_api_url}/auth/access_token", json=credentials
-        )
+        token_response = await self.client.post(f"{self.port_api_url}/auth/access_token", json=credentials)
         token_response.raise_for_status()
         response_data = token_response.json()
         logger.debug(f"Access token response: {json.dumps(response_data, indent=2)}")
@@ -40,17 +40,43 @@ class PortClient:
         if datetime.now() >= self.token_expiry_time:
             await self.refresh_access_token()
 
-    async def search_entities(self, blueprint_identifier: str, search_query: Dict[str, Any]) -> Dict[str, Any]:
+    async def search_entities(
+        self,
+        blueprint_identifier: str,
+        search_query: Dict[str, Any],
+        include_entities: list[str] | None = None,
+        exclude_entities: list[str] | None = None,
+    ) -> AsyncGenerator[list[dict[str, Any]], None]:
         await self.refresh_token_if_expired()
         url = f"{self.port_api_url}/blueprints/{blueprint_identifier}/entities/search"
-        logger.debug(f"Search query for {blueprint_identifier}: {json.dumps(search_query, indent=2)}")
-        response = await self.client.post(url, headers=self.port_headers, json={
-            "query": search_query
-        })
-        response.raise_for_status()
-        response_data: dict[str, Any] = response.json()
-        logger.debug(f"Search response for {blueprint_identifier}: {json.dumps(response_data, indent=2)}")
-        return response_data
+
+        # Start with the initial search query
+        current_query = search_query.copy()
+
+        while True:
+            # Prepare the request payload
+            payload: dict[str, Any] = {"query": current_query}
+            if include_entities:
+                payload["include"] = include_entities
+            if exclude_entities:
+                payload["exclude"] = exclude_entities
+
+            logger.debug(f"Search query for {blueprint_identifier}: {json.dumps(payload, indent=2)}")
+            response = await self.client.post(url, headers=self.port_headers, json=payload)
+            response.raise_for_status()
+            response_data: dict[str, Any] = response.json()
+            logger.debug(f"Search response for {blueprint_identifier}: {json.dumps(response_data, indent=2)}")
+
+            # Yield the current page of entities
+            yield response_data.get("entities", [])
+
+            # Check if there's a next page
+            next_cursor = response_data.get("next")
+            if not next_cursor:
+                break
+
+            # Update the query with the next cursor
+            current_query["from"] = next_cursor
 
     async def get_blueprint(self, blueprint_identifier: str) -> Dict[str, Any]:
         await self.refresh_token_if_expired()

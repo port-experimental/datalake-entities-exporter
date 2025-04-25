@@ -1,14 +1,16 @@
-from typing import Dict, Any, List, Optional, Set, Literal
+import json
+from typing import Any, Dict, List, Literal, Optional, Set
+
 from google.cloud import bigquery
 from google.oauth2 import service_account
 from loguru import logger
-import json
+
 
 class BigQueryClient:
     def __init__(
-        self, 
-        project_id: str, 
-        dataset_id: str, 
+        self,
+        project_id: str,
+        dataset_id: str,
         credentials: service_account.Credentials,
         auto_migrate: Literal["weak", "balanced", "hard"] = "weak",
     ):
@@ -27,10 +29,10 @@ class BigQueryClient:
                 "email": "STRING",
                 "markdown": "STRING",
                 "user": "STRING",
-                "date-time": "TIMESTAMP"
+                "date-time": "TIMESTAMP",
             }
             return format_mapping.get(format.lower(), "STRING")
-        
+
         # Then check the base type
         type_mapping = {
             "string": "STRING",
@@ -38,7 +40,7 @@ class BigQueryClient:
             "boolean": "BOOL",
             "array": "STRING",  # Storing arrays as JSON strings
             "object": "STRING",  # Storing objects as JSON strings
-            "datetime": "TIMESTAMP"
+            "datetime": "TIMESTAMP",
         }
         return type_mapping.get(port_type.lower(), "STRING")
 
@@ -53,12 +55,9 @@ class BigQueryClient:
         # Handle properties
         properties = blueprint.get("schema", {}).get("properties", {})
         required_properties = blueprint.get("schema", {}).get("required", [])
-        
+
         for prop_name, prop_details in properties.items():
-            field_type = self._map_port_type_to_bigquery(
-                prop_details.get("type", "string"),
-                prop_details.get("format")
-            )
+            field_type = self._map_port_type_to_bigquery(prop_details.get("type", "string"), prop_details.get("format"))
             mode = "REQUIRED" if prop_name in required_properties else "NULLABLE"
             schema.append(bigquery.SchemaField(prop_name, field_type, mode=mode))
 
@@ -67,62 +66,60 @@ class BigQueryClient:
         for relation_name, relation_details in relations.items():
             is_many = relation_details.get("many", False)
             is_required = relation_details.get("required", False)
-            
+
             if is_many:
                 # For many relations, store as JSON string of identifiers
-                schema.append(bigquery.SchemaField(
-                    relation_name,
-                    "STRING",
-                    mode="NULLABLE",
-                    description=f"JSON array of {relation_name} identifiers"
-                ))
+                schema.append(
+                    bigquery.SchemaField(
+                        relation_name,
+                        "STRING",
+                        mode="NULLABLE",
+                        description=f"JSON array of {relation_name} identifiers",
+                    )
+                )
             else:
                 # For single relations, store as string identifier
                 mode = "REQUIRED" if is_required else "NULLABLE"
-                schema.append(bigquery.SchemaField(
-                    relation_name,
-                    "STRING",
-                    mode=mode
-                ))
+                schema.append(bigquery.SchemaField(relation_name, "STRING", mode=mode))
 
         # Handle calculation properties
         calculation_properties = blueprint.get("calculationProperties", {})
         for calc_name, calc_details in calculation_properties.items():
-            field_type = self._map_port_type_to_bigquery(
-                calc_details.get("type", "string"),
-                calc_details.get("format")
+            field_type = self._map_port_type_to_bigquery(calc_details.get("type", "string"), calc_details.get("format"))
+            schema.append(
+                bigquery.SchemaField(
+                    calc_name,
+                    field_type,
+                    mode="NULLABLE",
+                    description=f"Calculated property: {calc_details.get('description', '')}",
+                )
             )
-            schema.append(bigquery.SchemaField(
-                calc_name,
-                field_type,
-                mode="NULLABLE",
-                description=f"Calculated property: {calc_details.get('description', '')}"
-            ))
 
         # Handle aggregation properties
         aggregation_properties = blueprint.get("aggregationProperties", {})
         for agg_name, agg_details in aggregation_properties.items():
-            field_type = self._map_port_type_to_bigquery(
-                agg_details.get("type", "string"),
-                agg_details.get("format")
+            field_type = self._map_port_type_to_bigquery(agg_details.get("type", "string"), agg_details.get("format"))
+            schema.append(
+                bigquery.SchemaField(
+                    agg_name,
+                    field_type,
+                    mode="NULLABLE",
+                    description=f"Aggregation property: {agg_details.get('description', '')}",
+                )
             )
-            schema.append(bigquery.SchemaField(
-                agg_name,
-                field_type,
-                mode="NULLABLE",
-                description=f"Aggregation property: {agg_details.get('description', '')}"
-            ))
 
         # Handle mirror properties
         mirror_properties = blueprint.get("mirrorProperties", {})
         for mirror_name, mirror_details in mirror_properties.items():
             field_type = "STRING"  # Mirror properties are always strings
-            schema.append(bigquery.SchemaField(
-                mirror_name,
-                field_type,
-                mode="NULLABLE",
-                description=f"Mirror property from path: {mirror_details.get('path', '')}"
-            ))
+            schema.append(
+                bigquery.SchemaField(
+                    mirror_name,
+                    field_type,
+                    mode="NULLABLE",
+                    description=f"Mirror property from path: {mirror_details.get('path', '')}",
+                )
+            )
 
         return schema
 
@@ -145,7 +142,7 @@ class BigQueryClient:
         changes = {
             "added": new_fields - existing_fields,
             "removed": existing_fields - new_fields if self.auto_migrate == "hard" else set(),
-            "unchanged": existing_fields & new_fields
+            "unchanged": existing_fields & new_fields,
         }
         logger.debug(f"Schema comparison results: {changes}")
         return changes
@@ -153,7 +150,7 @@ class BigQueryClient:
     def create_or_update_table(self, table_id: str, schema: List[bigquery.SchemaField]) -> None:
         table_ref = self.dataset_ref.table(table_id)
         logger.info(f"Processing table {table_id} in {self.auto_migrate} mode")
-        
+
         if self.auto_migrate == "weak":
             try:
                 table = self.client.get_table(table_ref)
@@ -168,12 +165,12 @@ class BigQueryClient:
         try:
             existing_table = self.client.get_table(table_ref)
             logger.debug(f"Found existing table {table_id}")
-            
+
             existing_fields = self._get_existing_schema_fields(table_ref)
             new_fields = self._get_new_schema_fields(schema)
-            
+
             schema_changes = self._compare_schemas(existing_fields, new_fields)
-            
+
             if not schema_changes["added"] and not schema_changes["removed"]:
                 logger.info(f"Table {table_id} schema is up to date")
                 return
@@ -196,8 +193,7 @@ class BigQueryClient:
             # Only remove fields if in hard mode
             if self.auto_migrate == "hard" and schema_changes["removed"]:
                 logger.info(f"Removing fields from {table_id}: {schema_changes['removed']}")
-                new_schema = [field for field in existing_table.schema 
-                            if field.name not in schema_changes["removed"]]
+                new_schema = [field for field in existing_table.schema if field.name not in schema_changes["removed"]]
                 existing_table.schema = new_schema
                 try:
                     self.client.update_table(existing_table, ["schema"])
@@ -215,13 +211,13 @@ class BigQueryClient:
             table = self.client.create_table(table)
             logger.info(f"Created new table {table_id}")
 
-    def insert_entities(self, table_id: str, entities: List[Dict[str, Any]]) -> None:
+    def insert_entities(self, table_id: str, entities: list[dict[str, Any]]) -> None:
         table_ref = self.dataset_ref.table(table_id)
         table = self.client.get_table(table_ref)
-        
+
         # Get all field names from the table schema
         schema_fields = {field.name for field in table.schema}
-        
+
         # First, get all existing identifiers
         query = f"""
             SELECT identifier FROM `{table.project}.{table.dataset_id}.{table.table_id}`
@@ -236,7 +232,7 @@ class BigQueryClient:
 
         rows_to_insert = []
         rows_to_update = []
-        
+
         for entity in entities:
             row = {
                 "identifier": entity["identifier"],
@@ -244,12 +240,12 @@ class BigQueryClient:
                 "created_at": entity.get("createdAt"),
                 "updated_at": entity.get("updatedAt"),
             }
-            
+
             # Add properties
             for prop_name, prop_value in entity.get("properties", {}).items():
                 if prop_name in schema_fields:
                     row[prop_name] = prop_value
-            
+
             # Add relations
             for relation_name, relation in entity.get("relations", {}).items():
                 if relation_name in schema_fields:
@@ -259,17 +255,17 @@ class BigQueryClient:
                     elif isinstance(relation, list):
                         # Many relations
                         row[relation_name] = json.dumps(relation)
-            
+
             # Add calculation properties
             for calc_name, calc_value in entity.get("calculationProperties", {}).items():
                 if calc_name in schema_fields:
                     row[calc_name] = calc_value
-            
+
             # Add aggregation properties
             for agg_name, agg_value in entity.get("aggregationProperties", {}).items():
                 if agg_name in schema_fields:
                     row[agg_name] = agg_value
-            
+
             # Add mirror properties
             for mirror_name, mirror_value in entity.get("mirrorProperties", {}).items():
                 if mirror_name in schema_fields:
@@ -297,10 +293,10 @@ class BigQueryClient:
                     SET {', '.join(f"{k} = @{k}" for k in row.keys())}
                     WHERE identifier = @identifier
                 """
-                
+
                 # Create a mapping of field names to their types
                 field_types = {field.name: field.field_type for field in table.schema}
-                
+
                 # Create query parameters with correct types
                 query_parameters = []
                 for k, v in row.items():
@@ -308,22 +304,17 @@ class BigQueryClient:
                     if field_type == "TIMESTAMP" and isinstance(v, str):
                         # Convert string timestamps to datetime
                         from datetime import datetime
-                        v = datetime.fromisoformat(v.replace('Z', '+00:00'))
-                    query_parameters.append(
-                        bigquery.ScalarQueryParameter(k, field_type, v)
-                    )
-                query_parameters.append(
-                    bigquery.ScalarQueryParameter("identifier", "STRING", identifier)
-                )
-                
-                job_config = bigquery.QueryJobConfig(
-                    query_parameters=query_parameters
-                )
-                
+
+                        v = datetime.fromisoformat(v.replace("Z", "+00:00"))
+                    query_parameters.append(bigquery.ScalarQueryParameter(k, field_type, v))
+                query_parameters.append(bigquery.ScalarQueryParameter("identifier", "STRING", identifier))
+
+                job_config = bigquery.QueryJobConfig(query_parameters=query_parameters)
+
                 try:
                     query_job = self.client.query(update_query, job_config=job_config)
                     query_job.result()  # Wait for the query to complete
                 except Exception as e:
                     logger.error(f"Error updating row with identifier {identifier}: {str(e)}")
-            
+
             logger.info(f"Completed updates for {len(rows_to_update)} rows in {table_id}")
