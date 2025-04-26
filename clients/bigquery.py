@@ -445,44 +445,72 @@ class BigQueryClient:
 
         return row
 
-    async def _execute_update_query(
-        self, table: bigquery.Table, identifier: str, row: Dict[str, Any]
+    async def _execute_bulk_update(
+        self, table: bigquery.Table, rows_to_update: List[Dict[str, Any]]
     ) -> None:
-        """Execute an update query for a single row.
+        """Execute a bulk update for multiple rows.
 
         Args:
             table: The BigQuery table to update.
-            identifier: The entity identifier to update.
-            row: Dictionary of field values to update.
+            rows_to_update: List of rows to update, each containing an identifier and field values.
         """
-        update_query = f"""
-            UPDATE `{table.project}.{table.dataset_id}.{table.table_id}`
-            SET {', '.join(f"{k} = @{k}" for k in row.keys())}
-            WHERE identifier = @identifier
-        """
+        if not rows_to_update:
+            return
+
+        # Group rows by their field sets to create more efficient UPDATE statements
+        field_sets: Dict[frozenset[str], List[tuple[str, Dict[str, Any]]]] = {}
+        for row in rows_to_update:
+            identifier = row.pop("identifier")
+            field_set = frozenset(row.keys())
+            if field_set not in field_sets:
+                field_sets[field_set] = []
+            field_sets[field_set].append((identifier, row))
 
         # Create a mapping of field names to their types
         field_types = {field.name: field.field_type for field in table.schema}
 
-        # Create query parameters with correct types
-        query_parameters = []
-        for k, v in row.items():
-            field_type = field_types.get(k, "STRING")  # Default to STRING if type not found
-            if field_type == "TIMESTAMP" and isinstance(v, str):
-                # Convert string timestamps to datetime
-                from datetime import datetime
+        async def _execute_single_update(identifier: str, row: Dict[str, Any], fields: List[str]) -> None:
+            """Execute a single update query.
 
-                v = datetime.fromisoformat(v.replace("Z", "+00:00"))
-            query_parameters.append(bigquery.ScalarQueryParameter(k, field_type, v))
-        query_parameters.append(bigquery.ScalarQueryParameter("identifier", "STRING", identifier))
+            Args:
+                identifier: The entity identifier to update.
+                row: Dictionary of field values to update.
+                fields: List of fields being updated.
+            """
+            update_query = f"""
+                UPDATE `{table.project}.{table.dataset_id}.{table.table_id}`
+                SET {', '.join(f"{field} = @{field}" for field in fields)}
+                WHERE identifier = @identifier
+            """
 
-        job_config = bigquery.QueryJobConfig(query_parameters=query_parameters)
+            query_parameters = []
+            for field in fields:
+                field_type = field_types.get(field, "STRING")
+                value = row[field]
+                if field_type == "TIMESTAMP" and isinstance(value, str):
+                    from datetime import datetime
+                    value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                query_parameters.append(bigquery.ScalarQueryParameter(field, field_type, value))
+            query_parameters.append(bigquery.ScalarQueryParameter("identifier", "STRING", identifier))
 
-        try:
-            query_job = await asyncio.to_thread(self.client.query, update_query, job_config)
-            await asyncio.to_thread(query_job.result)
-        except Exception as e:
-            logger.error(f"Error updating row with identifier {identifier}: {str(e)}")
+            job_config = bigquery.QueryJobConfig(query_parameters=query_parameters)
+
+            try:
+                query_job = await asyncio.to_thread(self.client.query, update_query, job_config)
+                await asyncio.to_thread(query_job.result)
+            except Exception as e:
+                logger.error(f"Error updating row with identifier {identifier}: {str(e)}")
+
+        # Execute updates for each field set in parallel
+        for field_set, rows in field_sets.items():
+            fields = list(field_set)
+            # Create tasks for all rows in this field set
+            tasks = [
+                _execute_single_update(identifier, row, fields)
+                for identifier, row in rows
+            ]
+            # Execute all updates for this field set in parallel
+            await asyncio.gather(*tasks, return_exceptions=True)
 
     async def insert_entities(self, table_id: str, entities: list[dict[str, Any]]) -> None:
         """Insert or update entities in a BigQuery table.
@@ -512,18 +540,22 @@ class BigQueryClient:
             else:
                 rows_to_insert.append(row)
 
-        # Handle inserts
-        if rows_to_insert:
-            errors = await asyncio.to_thread(self.client.insert_rows_json, table, rows_to_insert)
-            if errors:
-                logger.error(f"Errors while inserting rows: {errors}")
-            else:
-                logger.info(f"Successfully inserted {len(rows_to_insert)} rows into {table_id}")
+        logger.info(f"Inserting {len(rows_to_insert)} rows and updating {len(rows_to_update)} rows")
 
-        # Handle updates
-        if rows_to_update:
-            for row in rows_to_update:
-                identifier = row.pop("identifier")
-                await self._execute_update_query(table, identifier, row)
+        # Execute inserts and updates in parallel
+        insert_task = asyncio.to_thread(self.client.insert_rows_json, table, rows_to_insert)
+        update_task = self._execute_bulk_update(table, rows_to_update)
 
-            logger.info(f"Completed updates for {len(rows_to_update)} rows in {table_id}")
+        # Wait for both operations to complete
+        insert_errors, _ = await asyncio.gather(
+            insert_task,
+            update_task,
+            return_exceptions=True
+        )
+
+        if insert_errors:
+            logger.error(f"Errors while inserting rows: {insert_errors}")
+        else:
+            logger.info(f"Successfully inserted {len(rows_to_insert)} rows into {table_id}")
+
+        logger.info(f"Completed updates for {len(rows_to_update)} rows in {table_id}")
