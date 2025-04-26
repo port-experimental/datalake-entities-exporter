@@ -22,7 +22,7 @@ async def export_blueprint(
     schema = bigquery_client._create_schema_from_blueprint(blueprint)
 
     # Create or update table
-    bigquery_client.create_or_update_table(blueprint_identifier, schema)
+    await bigquery_client.create_or_update_table(blueprint_identifier, schema)
 
     # Search and export entities
     total_entities = 0
@@ -34,7 +34,7 @@ async def export_blueprint(
     ):
         if entities:
             logger.debug(f"Found {len(entities)} entities for {blueprint_identifier}")
-            bigquery_client.insert_entities(blueprint_identifier, entities)
+            await bigquery_client.insert_entities(blueprint_identifier, entities)
             total_entities += len(entities)
             logger.info(f"Exported {total_entities} entities so far for blueprint {blueprint_identifier}")
 
