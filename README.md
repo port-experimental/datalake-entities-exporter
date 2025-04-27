@@ -131,24 +131,14 @@ The exporter supports three schema migration modes:
 ## Development
 
 The project uses several development tools:
-- `ruff` for linting
-- `mypy` for type checking
-- `black` for code formatting
-- `pytest` for testing
+- `ruff` for linting and code formatting
+- `mypy` for static type checking
 
 To run these tools:
+
 ```bash
-# Run linting
+# Run linting and type checking
 make lint
-
-# Run type checking
-make typecheck
-
-# Run tests
-make test
-
-# Run all checks (lint, typecheck, test)
-make check
 ```
 
 ## Features
@@ -160,12 +150,7 @@ make check
 - Automatic pagination handling for large result sets
 - Progress updates during export
 - Logging of export progress and errors
-
-## Notes
-
-- The script requires Google Cloud credentials to be set up in your environment
-- Tables are created with the same name as the blueprint identifier
-- Arrays and objects are stored as JSON strings in BigQuery
-- The script maintains the original data types where possible
-- The script automatically handles pagination for large result sets
-- Updates to existing rows may be delayed due to BigQuery's streaming buffer 
+- Automatic cleanup of duplicate rows after export
+- Support for both service account and user credentials for Google Cloud authentication
+- Environment variable validation using Pydantic
+- Async/await support for better performance with large datasets
