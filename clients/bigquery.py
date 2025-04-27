@@ -365,13 +365,18 @@ class BigQueryClient:
             fields_to_remove: Set of field names to remove.
         """
         logger.info(f"Removing fields from {table.table_id}: {fields_to_remove}")
-        new_schema = [field for field in table.schema if field.name not in fields_to_remove]
-        table.schema = new_schema
+        
+        # Create a single ALTER TABLE statement with all columns to drop
+        alter_query = f"""
+            ALTER TABLE `{table.project}.{table.dataset_id}.{table.table_id}`
+            DROP COLUMN IF EXISTS {', DROP COLUMN IF EXISTS '.join(fields_to_remove)}
+        """
         try:
-            await asyncio.to_thread(self.client.update_table, table, ["schema"])
-            logger.info(f"Successfully removed fields from {table.table_id}")
+            query_job = await asyncio.to_thread(self.client.query, alter_query)
+            await asyncio.to_thread(query_job.result)
+            logger.info(f"Successfully removed columns from {table.table_id}: {fields_to_remove}")
         except Exception as e:
-            logger.error(f"Failed to remove fields from {table.table_id}: {str(e)}")
+            logger.error(f"Failed to remove columns from {table.table_id}: {str(e)}")
             raise
 
     async def _get_existing_identifiers(self, table: bigquery.Table) -> Set[str]:
