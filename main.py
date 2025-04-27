@@ -67,6 +67,12 @@ async def main() -> None:
     for blueprint_config in config_data.blueprints:
         await export_blueprint(port_client, bigquery_client, blueprint_config)
 
+    # Clean up duplicates after all blueprints are processed
+    logger.info("Cleaning up duplicate rows in all tables...")
+    for blueprint_config in config_data.blueprints:
+        await bigquery_client.cleanup_duplicates(blueprint_config.identifier)
+    logger.info("Completed cleanup of all tables")
+
 
 if __name__ == "__main__":
     try:

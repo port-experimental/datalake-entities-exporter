@@ -500,23 +500,48 @@ class BigQueryClient:
             except Exception as e:
                 logger.error(f"Error updating row with identifier {identifier}: {str(e)}")
 
-        # Execute updates for each field set in parallel
+        # Process each field set sequentially to avoid serialization conflicts
         for field_set, rows in field_sets.items():
             fields = list(field_set)
-            # Create tasks for all rows in this field set
-            tasks = [
-                _execute_single_update(identifier, row, fields)
-                for identifier, row in rows
-            ]
-            # Execute all updates for this field set in parallel
-            await asyncio.gather(*tasks, return_exceptions=True)
+            logger.info(f"Processing {len(rows)} updates for field set: {fields}")
+            
+            # Process updates sequentially within each field set
+            for identifier, row in rows:
+                await _execute_single_update(identifier, row, fields)
+            
+            logger.info(f"Completed updates for field set: {fields}")
+
+    async def cleanup_duplicates(self, table_id: str) -> None:
+        """Remove duplicate rows, keeping the most recently updated version.
+
+        Args:
+            table_id: ID of the table to clean up.
+        """
+        table_ref = self.dataset_ref.table(table_id)
+        table = await asyncio.to_thread(self.client.get_table, table_ref)
+        
+        cleanup_query = f"""
+            DELETE FROM `{table.project}.{table.dataset_id}.{table.table_id}` t1
+            WHERE EXISTS (
+                SELECT 1
+                FROM `{table.project}.{table.dataset_id}.{table.table_id}` t2
+                WHERE t1.identifier = t2.identifier
+                AND t1.updated_at < t2.updated_at
+            )
+        """
+        try:
+            query_job = await asyncio.to_thread(self.client.query, cleanup_query)
+            await asyncio.to_thread(query_job.result)
+            logger.info(f"Cleaned up duplicate rows in {table.table_id}")
+        except Exception as e:
+            logger.error(f"Error cleaning up duplicates in {table.table_id}: {str(e)}")
 
     async def insert_entities(self, table_id: str, entities: list[dict[str, Any]]) -> None:
-        """Insert or update entities in a BigQuery table.
+        """Insert entities into a BigQuery table.
 
         Args:
             table_id: ID of the table to insert into.
-            entities: List of entities to insert or update.
+            entities: List of entities to insert.
         """
         table_ref = self.dataset_ref.table(table_id)
         table = await asyncio.to_thread(self.client.get_table, table_ref)
@@ -524,37 +549,18 @@ class BigQueryClient:
         # Get all field names from the table schema
         schema_fields = {field.name for field in table.schema}
 
-        # Get existing identifiers
-        existing_identifiers = await self._get_existing_identifiers(table)
-
+        # Prepare rows for insertion
         rows_to_insert = []
-        rows_to_update = []
-
-        # Prepare rows for insertion or update
         for entity in entities:
             row = self._prepare_entity_row(entity, schema_fields)
+            rows_to_insert.append(row)
 
-            if entity["identifier"] in existing_identifiers:
-                rows_to_update.append(row)
+        logger.info(f"Inserting {len(rows_to_insert)} rows into {table_id}")
+
+        # Insert all rows
+        if rows_to_insert:
+            errors = await asyncio.to_thread(self.client.insert_rows_json, table, rows_to_insert)
+            if errors:
+                logger.error(f"Errors while inserting rows: {errors}")
             else:
-                rows_to_insert.append(row)
-
-        logger.info(f"Inserting {len(rows_to_insert)} rows and updating {len(rows_to_update)} rows")
-
-        # Execute inserts and updates in parallel
-        insert_task = asyncio.to_thread(self.client.insert_rows_json, table, rows_to_insert)
-        update_task = self._execute_bulk_update(table, rows_to_update)
-
-        # Wait for both operations to complete
-        insert_errors, _ = await asyncio.gather(
-            insert_task,
-            update_task,
-            return_exceptions=True
-        )
-
-        if insert_errors:
-            logger.error(f"Errors while inserting rows: {insert_errors}")
-        else:
-            logger.info(f"Successfully inserted {len(rows_to_insert)} rows into {table_id}")
-
-        logger.info(f"Completed updates for {len(rows_to_update)} rows in {table_id}")
+                logger.info(f"Successfully inserted {len(rows_to_insert)} rows into {table_id}")
