@@ -75,45 +75,6 @@ class BigQueryClient:
         }
         return type_mapping.get(port_type.lower(), "STRING")
 
-    def _create_schema_from_blueprint(self, blueprint: Dict[str, Any]) -> List[bigquery.SchemaField]:
-        """Create BigQuery schema from Port blueprint.
-
-        Args:
-            blueprint: Port blueprint containing schema information.
-
-        Returns:
-            List of BigQuery schema fields.
-        """
-        schema = [
-            bigquery.SchemaField("identifier", "STRING", mode="REQUIRED"),
-            bigquery.SchemaField("title", "STRING"),
-            bigquery.SchemaField("created_at", "TIMESTAMP"),
-            bigquery.SchemaField("updated_at", "TIMESTAMP"),
-        ]
-
-        # Handle properties
-        properties = blueprint.get("schema", {}).get("properties", {})
-        required_properties = blueprint.get("schema", {}).get("required", [])
-        schema.extend(self._create_property_fields(properties, required_properties))
-
-        # Handle relations
-        relations = blueprint.get("relations", {})
-        schema.extend(self._create_relation_fields(relations))
-
-        # Handle calculation properties
-        calculation_properties = blueprint.get("calculationProperties", {})
-        schema.extend(self._create_calculation_fields(calculation_properties))
-
-        # Handle aggregation properties
-        aggregation_properties = blueprint.get("aggregationProperties", {})
-        schema.extend(self._create_aggregation_fields(aggregation_properties))
-
-        # Handle mirror properties
-        mirror_properties = blueprint.get("mirrorProperties", {})
-        schema.extend(self._create_mirror_fields(mirror_properties))
-
-        return schema
-
     def _create_property_fields(
         self, properties: Dict[str, Any], required_properties: List[str]
     ) -> List[bigquery.SchemaField]:
@@ -121,7 +82,7 @@ class BigQueryClient:
 
         Args:
             properties: Dictionary of property definitions.
-            required_properties: List of required property names.
+            required_properties: List of required property names (ignored).
 
         Returns:
             List of schema fields for properties.
@@ -131,8 +92,8 @@ class BigQueryClient:
             field_type = self._map_port_type_to_bigquery(
                 prop_details.get("type", "string"), prop_details.get("format")
             )
-            mode = "REQUIRED" if prop_name in required_properties else "NULLABLE"
-            fields.append(bigquery.SchemaField(prop_name, field_type, mode=mode))
+            # All fields are nullable to handle migrations easily
+            fields.append(bigquery.SchemaField(prop_name, field_type, mode="NULLABLE"))
         return fields
 
     def _create_relation_fields(self, relations: Dict[str, Any]) -> List[bigquery.SchemaField]:
@@ -147,8 +108,7 @@ class BigQueryClient:
         fields = []
         for relation_name, relation_details in relations.items():
             is_many = relation_details.get("many", False)
-            is_required = relation_details.get("required", False)
-
+            # All fields are nullable to handle migrations easily
             if is_many:
                 fields.append(
                     bigquery.SchemaField(
@@ -159,8 +119,7 @@ class BigQueryClient:
                     )
                 )
             else:
-                mode = "REQUIRED" if is_required else "NULLABLE"
-                fields.append(bigquery.SchemaField(relation_name, "STRING", mode=mode))
+                fields.append(bigquery.SchemaField(relation_name, "STRING", mode="NULLABLE"))
         return fields
 
     def _create_calculation_fields(
@@ -235,6 +194,46 @@ class BigQueryClient:
                 )
             )
         return fields
+
+    def _create_schema_from_blueprint(self, blueprint: Dict[str, Any]) -> List[bigquery.SchemaField]:
+        """Create BigQuery schema from Port blueprint.
+
+        Args:
+            blueprint: Port blueprint containing schema information.
+
+        Returns:
+            List of BigQuery schema fields.
+        """
+        # All fields except identifier are nullable to handle migrations easily
+        schema = [
+            bigquery.SchemaField("identifier", "STRING", mode="REQUIRED"),
+            bigquery.SchemaField("title", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("created_at", "TIMESTAMP", mode="NULLABLE"),
+            bigquery.SchemaField("updated_at", "TIMESTAMP", mode="NULLABLE"),
+        ]
+
+        # Handle properties
+        properties = blueprint.get("schema", {}).get("properties", {})
+        required_properties = blueprint.get("schema", {}).get("required", [])
+        schema.extend(self._create_property_fields(properties, required_properties))
+
+        # Handle relations
+        relations = blueprint.get("relations", {})
+        schema.extend(self._create_relation_fields(relations))
+
+        # Handle calculation properties
+        calculation_properties = blueprint.get("calculationProperties", {})
+        schema.extend(self._create_calculation_fields(calculation_properties))
+
+        # Handle aggregation properties
+        aggregation_properties = blueprint.get("aggregationProperties", {})
+        schema.extend(self._create_aggregation_fields(aggregation_properties))
+
+        # Handle mirror properties
+        mirror_properties = blueprint.get("mirrorProperties", {})
+        schema.extend(self._create_mirror_fields(mirror_properties))
+
+        return schema
 
     async def _get_existing_schema_fields(self, table_ref: bigquery.TableReference) -> Set[str]:
         """Get existing schema fields from a BigQuery table.
