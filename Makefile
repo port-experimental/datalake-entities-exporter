@@ -38,8 +38,5 @@ lint:
 	@poetry run ruff format --check .
 	@poetry run mypy .
 
-test:
-	@poetry run pytest
-
 run:
 	@poetry run python main.py
