@@ -1,18 +1,58 @@
-from typing import Dict, Any, List, Optional, Set
-from google.cloud import bigquery   # type: ignore
-from loguru import logger
+import asyncio
 import json
+from typing import Any, Literal
+
+from google.cloud import bigquery
+from google.oauth2 import credentials
+from loguru import logger
+
 
 class BigQueryClient:
-    def __init__(self, project_id: str, dataset_id: str, auto_migrate: str = "weak"):
-        self.client = bigquery.Client(project=project_id)
+    """Client for interacting with Google BigQuery.
+
+    This client handles all BigQuery operations including table management,
+    schema updates, and data insertion. It supports automatic schema migration
+    with different modes of operation.
+
+    Attributes:
+        client: The BigQuery client instance.
+        dataset_id: The ID of the BigQuery dataset.
+        dataset_ref: Reference to the BigQuery dataset.
+        auto_migrate: Schema migration mode ('weak', 'balanced', or 'hard').
+    """
+
+    def __init__(
+        self,
+        project_id: str,
+        dataset_id: str,
+        credentials: credentials.Credentials,
+        auto_migrate: Literal["weak", "balanced", "hard"] = "weak",
+    ):
+        """Initialize the BigQuery client.
+
+        Args:
+            project_id: Google Cloud project ID.
+            dataset_id: BigQuery dataset ID.
+            credentials: Google Cloud credentials.
+            auto_migrate: Schema migration mode ('weak', 'balanced', or 'hard').
+        """
+        self.client = bigquery.Client(project=project_id, credentials=credentials)
         self.dataset_id = dataset_id
         self.dataset_ref = bigquery.DatasetReference(project_id, dataset_id)
         self.auto_migrate = auto_migrate.lower()
         if self.auto_migrate not in ["weak", "balanced", "hard"]:
             raise ValueError("auto_migrate must be one of: 'weak', 'balanced', 'hard'")
 
-    def _map_port_type_to_bigquery(self, port_type: str, format: Optional[str] = None) -> str:
+    def _map_port_type_to_bigquery(self, port_type: str, format: str | None = None) -> str:
+        """Map Port entity types to BigQuery field types.
+
+        Args:
+            port_type: The Port entity type.
+            format: Optional format specification for the type.
+
+        Returns:
+            Corresponding BigQuery field type.
+        """
         # First check if it's a string with a specific format
         if port_type.lower() == "string" and format:
             format_mapping = {
@@ -20,10 +60,10 @@ class BigQueryClient:
                 "email": "STRING",
                 "markdown": "STRING",
                 "user": "STRING",
-                "date-time": "TIMESTAMP"
+                "date-time": "TIMESTAMP",
             }
             return format_mapping.get(format.lower(), "STRING")
-        
+
         # Then check the base type
         type_mapping = {
             "string": "STRING",
@@ -31,97 +71,171 @@ class BigQueryClient:
             "boolean": "BOOL",
             "array": "STRING",  # Storing arrays as JSON strings
             "object": "STRING",  # Storing objects as JSON strings
-            "datetime": "TIMESTAMP"
+            "datetime": "TIMESTAMP",
         }
         return type_mapping.get(port_type.lower(), "STRING")
 
-    def _create_schema_from_blueprint(self, blueprint: Dict[str, Any]) -> List[bigquery.SchemaField]:
+    def _create_property_fields(
+        self, properties: dict[str, Any], required_properties: list[str]
+    ) -> list[bigquery.SchemaField]:
+        """Create schema fields for Port properties.
+
+        Args:
+            properties: Dictionary of property definitions.
+            required_properties: List of required property names (ignored).
+
+        Returns:
+            List of schema fields for properties.
+        """
+        fields = []
+        for prop_name, prop_details in properties.items():
+            field_type = self._map_port_type_to_bigquery(prop_details.get("type", "string"), prop_details.get("format"))
+            # All fields are nullable to handle migrations easily
+            fields.append(bigquery.SchemaField(prop_name, field_type, mode="NULLABLE"))
+        return fields
+
+    def _create_relation_fields(self, relations: dict[str, Any]) -> list[bigquery.SchemaField]:
+        """Create schema fields for Port relations.
+
+        Args:
+            relations: Dictionary of relation definitions.
+
+        Returns:
+            List of schema fields for relations.
+        """
+        fields = []
+        for relation_name, relation_details in relations.items():
+            is_many = relation_details.get("many", False)
+            # All fields are nullable to handle migrations easily
+            if is_many:
+                fields.append(
+                    bigquery.SchemaField(
+                        relation_name,
+                        "STRING",
+                        mode="NULLABLE",
+                        description=f"JSON array of {relation_name} identifiers",
+                    )
+                )
+            else:
+                fields.append(bigquery.SchemaField(relation_name, "STRING", mode="NULLABLE"))
+        return fields
+
+    def _create_calculation_fields(self, calculation_properties: dict[str, Any]) -> list[bigquery.SchemaField]:
+        """Create schema fields for calculation properties.
+
+        Args:
+            calculation_properties: Dictionary of calculation property definitions.
+
+        Returns:
+            List of schema fields for calculation properties.
+        """
+        fields = []
+        for calc_name, calc_details in calculation_properties.items():
+            field_type = self._map_port_type_to_bigquery(calc_details.get("type", "string"), calc_details.get("format"))
+            fields.append(
+                bigquery.SchemaField(
+                    calc_name,
+                    field_type,
+                    mode="NULLABLE",
+                    description=f"Calculated property: {calc_details.get('description', '')}",
+                )
+            )
+        return fields
+
+    def _create_aggregation_fields(self, aggregation_properties: dict[str, Any]) -> list[bigquery.SchemaField]:
+        """Create schema fields for aggregation properties.
+
+        Args:
+            aggregation_properties: Dictionary of aggregation property definitions.
+
+        Returns:
+            List of schema fields for aggregation properties.
+        """
+        fields = []
+        for agg_name, agg_details in aggregation_properties.items():
+            field_type = self._map_port_type_to_bigquery(agg_details.get("type", "string"), agg_details.get("format"))
+            fields.append(
+                bigquery.SchemaField(
+                    agg_name,
+                    field_type,
+                    mode="NULLABLE",
+                    description=f"Aggregation property: {agg_details.get('description', '')}",
+                )
+            )
+        return fields
+
+    def _create_mirror_fields(self, mirror_properties: dict[str, Any]) -> list[bigquery.SchemaField]:
+        """Create schema fields for mirror properties.
+
+        Args:
+            mirror_properties: Dictionary of mirror property definitions.
+
+        Returns:
+            List of schema fields for mirror properties.
+        """
+        fields = []
+        for mirror_name, mirror_details in mirror_properties.items():
+            fields.append(
+                bigquery.SchemaField(
+                    mirror_name,
+                    "STRING",
+                    mode="NULLABLE",
+                    description=f"Mirror property from path: {mirror_details.get('path', '')}",
+                )
+            )
+        return fields
+
+    def _create_schema_from_blueprint(self, blueprint: dict[str, Any]) -> list[bigquery.SchemaField]:
+        """Create BigQuery schema from Port blueprint.
+
+        Args:
+            blueprint: Port blueprint containing schema information.
+
+        Returns:
+            List of BigQuery schema fields.
+        """
+        # All fields except identifier are nullable to handle migrations easily
         schema = [
             bigquery.SchemaField("identifier", "STRING", mode="REQUIRED"),
-            bigquery.SchemaField("title", "STRING"),
-            bigquery.SchemaField("created_at", "TIMESTAMP"),
-            bigquery.SchemaField("updated_at", "TIMESTAMP"),
+            bigquery.SchemaField("title", "STRING", mode="NULLABLE"),
+            bigquery.SchemaField("created_at", "TIMESTAMP", mode="NULLABLE"),
+            bigquery.SchemaField("updated_at", "TIMESTAMP", mode="NULLABLE"),
         ]
 
         # Handle properties
         properties = blueprint.get("schema", {}).get("properties", {})
         required_properties = blueprint.get("schema", {}).get("required", [])
-        
-        for prop_name, prop_details in properties.items():
-            field_type = self._map_port_type_to_bigquery(
-                prop_details.get("type", "string"),
-                prop_details.get("format")
-            )
-            mode = "REQUIRED" if prop_name in required_properties else "NULLABLE"
-            schema.append(bigquery.SchemaField(prop_name, field_type, mode=mode))
+        schema.extend(self._create_property_fields(properties, required_properties))
 
         # Handle relations
         relations = blueprint.get("relations", {})
-        for relation_name, relation_details in relations.items():
-            is_many = relation_details.get("many", False)
-            is_required = relation_details.get("required", False)
-            
-            if is_many:
-                # For many relations, store as JSON string of identifiers
-                schema.append(bigquery.SchemaField(
-                    relation_name,
-                    "STRING",
-                    mode="NULLABLE",
-                    description=f"JSON array of {relation_name} identifiers"
-                ))
-            else:
-                # For single relations, store as string identifier
-                mode = "REQUIRED" if is_required else "NULLABLE"
-                schema.append(bigquery.SchemaField(
-                    relation_name,
-                    "STRING",
-                    mode=mode
-                ))
+        schema.extend(self._create_relation_fields(relations))
 
         # Handle calculation properties
         calculation_properties = blueprint.get("calculationProperties", {})
-        for calc_name, calc_details in calculation_properties.items():
-            field_type = self._map_port_type_to_bigquery(
-                calc_details.get("type", "string"),
-                calc_details.get("format")
-            )
-            schema.append(bigquery.SchemaField(
-                calc_name,
-                field_type,
-                mode="NULLABLE",
-                description=f"Calculated property: {calc_details.get('description', '')}"
-            ))
+        schema.extend(self._create_calculation_fields(calculation_properties))
 
         # Handle aggregation properties
         aggregation_properties = blueprint.get("aggregationProperties", {})
-        for agg_name, agg_details in aggregation_properties.items():
-            field_type = self._map_port_type_to_bigquery(
-                agg_details.get("type", "string"),
-                agg_details.get("format")
-            )
-            schema.append(bigquery.SchemaField(
-                agg_name,
-                field_type,
-                mode="NULLABLE",
-                description=f"Aggregation property: {agg_details.get('description', '')}"
-            ))
+        schema.extend(self._create_aggregation_fields(aggregation_properties))
 
         # Handle mirror properties
         mirror_properties = blueprint.get("mirrorProperties", {})
-        for mirror_name, mirror_details in mirror_properties.items():
-            field_type = "STRING"  # Mirror properties are always strings
-            schema.append(bigquery.SchemaField(
-                mirror_name,
-                field_type,
-                mode="NULLABLE",
-                description=f"Mirror property from path: {mirror_details.get('path', '')}"
-            ))
+        schema.extend(self._create_mirror_fields(mirror_properties))
 
         return schema
 
-    def _get_existing_schema_fields(self, table_ref: bigquery.TableReference) -> Set[str]:
+    async def _get_existing_schema_fields(self, table_ref: bigquery.TableReference) -> set[str]:
+        """Get existing schema fields from a BigQuery table.
+
+        Args:
+            table_ref: Reference to the BigQuery table.
+
+        Returns:
+            Set of existing field names.
+        """
         try:
-            table = self.client.get_table(table_ref)
+            table = await asyncio.to_thread(self.client.get_table, table_ref)
             fields = {field.name for field in table.schema}
             logger.debug(f"Existing schema fields for {table_ref.table_id}: {fields}")
             return fields
@@ -129,75 +243,76 @@ class BigQueryClient:
             logger.debug(f"No existing table found for {table_ref.table_id}: {str(e)}")
             return set()
 
-    def _get_new_schema_fields(self, schema: List[bigquery.SchemaField]) -> Set[str]:
+    def _get_new_schema_fields(self, schema: list[bigquery.SchemaField]) -> set[str]:
+        """Get field names from a new schema.
+
+        Args:
+            schema: List of BigQuery schema fields.
+
+        Returns:
+            Set of field names.
+        """
         fields = {field.name for field in schema}
         logger.debug(f"New schema fields: {fields}")
         return fields
 
-    def _compare_schemas(self, existing_fields: Set[str], new_fields: Set[str]) -> Dict[str, Set[str]]:
+    def _compare_schemas(self, existing_fields: set[str], new_fields: set[str]) -> dict[str, set[str]]:
+        """Compare existing and new schema fields.
+
+        Args:
+            existing_fields: Set of existing field names.
+            new_fields: Set of new field names.
+
+        Returns:
+            Dictionary containing sets of added, removed, and unchanged fields.
+        """
         changes = {
             "added": new_fields - existing_fields,
             "removed": existing_fields - new_fields if self.auto_migrate == "hard" else set(),
-            "unchanged": existing_fields & new_fields
+            "unchanged": existing_fields & new_fields,
         }
         logger.debug(f"Schema comparison results: {changes}")
         return changes
 
-    def create_or_update_table(self, table_id: str, schema: List[bigquery.SchemaField]) -> None:
+    async def create_or_update_table(self, table_id: str, schema: list[bigquery.SchemaField]) -> None:
+        """Create or update a BigQuery table with the given schema.
+
+        Args:
+            table_id: ID of the table to create or update.
+            schema: List of BigQuery schema fields.
+        """
         table_ref = self.dataset_ref.table(table_id)
         logger.info(f"Processing table {table_id} in {self.auto_migrate} mode")
-        
+
         if self.auto_migrate == "weak":
             try:
-                table = self.client.get_table(table_ref)
+                table = await asyncio.to_thread(self.client.get_table, table_ref)
                 logger.info(f"Table {table_id} already exists, no changes made (weak mode)")
                 return
             except Exception:
                 table = bigquery.Table(table_ref, schema=schema)
-                table = self.client.create_table(table)
+                table = await asyncio.to_thread(self.client.create_table, table)
                 logger.info(f"Created table {table_id}")
                 return
 
         try:
-            existing_table = self.client.get_table(table_ref)
+            existing_table = await asyncio.to_thread(self.client.get_table, table_ref)
             logger.debug(f"Found existing table {table_id}")
-            
-            existing_fields = self._get_existing_schema_fields(table_ref)
+
+            existing_fields = await self._get_existing_schema_fields(table_ref)
             new_fields = self._get_new_schema_fields(schema)
-            
+
             schema_changes = self._compare_schemas(existing_fields, new_fields)
-            
+
             if not schema_changes["added"] and not schema_changes["removed"]:
                 logger.info(f"Table {table_id} schema is up to date")
                 return
 
             if schema_changes["added"]:
-                logger.info(f"Adding new fields to {table_id}: {schema_changes['added']}")
-                new_schema = existing_table.schema.copy()
-                for field in schema:
-                    if field.name in schema_changes["added"]:
-                        logger.debug(f"Adding field {field.name} with type {field.field_type}")
-                        new_schema.append(field)
-                existing_table.schema = new_schema
-                try:
-                    self.client.update_table(existing_table, ["schema"])
-                    logger.info(f"Successfully updated schema for {table_id}")
-                except Exception as e:
-                    logger.error(f"Failed to update schema for {table_id}: {str(e)}")
-                    raise
+                await self._add_fields_to_table(existing_table, schema, schema_changes["added"])
 
-            # Only remove fields if in hard mode
             if self.auto_migrate == "hard" and schema_changes["removed"]:
-                logger.info(f"Removing fields from {table_id}: {schema_changes['removed']}")
-                new_schema = [field for field in existing_table.schema 
-                            if field.name not in schema_changes["removed"]]
-                existing_table.schema = new_schema
-                try:
-                    self.client.update_table(existing_table, ["schema"])
-                    logger.info(f"Successfully removed fields from {table_id}")
-                except Exception as e:
-                    logger.error(f"Failed to remove fields from {table_id}: {str(e)}")
-                    raise
+                await self._remove_fields_from_table(existing_table, schema_changes["removed"])
             elif schema_changes["removed"]:
                 logger.info(f"Fields would be removed in hard mode: {schema_changes['removed']}")
 
@@ -205,140 +320,239 @@ class BigQueryClient:
             logger.error(f"Error processing table {table_id}: {str(e)}")
             # Table doesn't exist, create it
             table = bigquery.Table(table_ref, schema=schema)
-            table = self.client.create_table(table)
+            table = await asyncio.to_thread(self.client.create_table, table)
             logger.info(f"Created new table {table_id}")
 
-    def _flush_streaming_buffer(self, table_ref: bigquery.TableReference) -> None:
-        """Flush the streaming buffer for a table."""
-        try:
-            self.client.flush_rows(table_ref)
-            logger.info(f"Successfully flushed streaming buffer for {table_ref.table_id}")
-        except Exception as e:
-            logger.warning(f"Could not flush streaming buffer for {table_ref.table_id}: {str(e)}")
+    async def _add_fields_to_table(
+        self, table: bigquery.Table, schema: list[bigquery.SchemaField], fields_to_add: set[str]
+    ) -> None:
+        """Add new fields to an existing table.
 
-    def insert_entities(self, table_id: str, entities: List[Dict[str, Any]]) -> None:
-        table_ref = self.dataset_ref.table(table_id)
-        table = self.client.get_table(table_ref)
-        
-        # Get all field names from the table schema
-        schema_fields = {field.name for field in table.schema}
-        
-        # First, get all existing identifiers
+        Args:
+            table: The BigQuery table to update.
+            schema: List of all schema fields.
+            fields_to_add: Set of field names to add.
+        """
+        logger.info(f"Adding new fields to {table.table_id}: {fields_to_add}")
+        new_schema = table.schema.copy()
+        for field in schema:
+            if field.name in fields_to_add:
+                logger.debug(f"Adding field {field.name} with type {field.field_type}")
+                new_schema.append(field)
+        table.schema = new_schema
+        try:
+            await asyncio.to_thread(self.client.update_table, table, ["schema"])
+            logger.info(f"Successfully updated schema for {table.table_id}")
+        except Exception as e:
+            logger.error(f"Failed to update schema for {table.table_id}: {str(e)}")
+            raise
+
+    async def _remove_fields_from_table(self, table: bigquery.Table, fields_to_remove: set[str]) -> None:
+        """Remove fields from an existing table.
+
+        Args:
+            table: The BigQuery table to update.
+            fields_to_remove: Set of field names to remove.
+        """
+        logger.info(f"Removing fields from {table.table_id}: {fields_to_remove}")
+
+        # Create a single ALTER TABLE statement with all columns to drop
+        alter_query = f"""
+            ALTER TABLE `{table.project}.{table.dataset_id}.{table.table_id}`
+            DROP COLUMN IF EXISTS {', DROP COLUMN IF EXISTS '.join(fields_to_remove)}
+        """
+        try:
+            query_job = await asyncio.to_thread(self.client.query, alter_query)
+            await asyncio.to_thread(query_job.result)
+            logger.info(f"Successfully removed columns from {table.table_id}: {fields_to_remove}")
+        except Exception as e:
+            logger.error(f"Failed to remove columns from {table.table_id}: {str(e)}")
+            raise
+
+    async def _get_existing_identifiers(self, table: bigquery.Table) -> set[str]:
+        """Get existing entity identifiers from a table.
+
+        Args:
+            table: The BigQuery table to query.
+
+        Returns:
+            Set of existing entity identifiers.
+        """
         query = f"""
             SELECT identifier FROM `{table.project}.{table.dataset_id}.{table.table_id}`
         """
         existing_identifiers = set()
         try:
-            query_job = self.client.query(query)
+            query_job = await asyncio.to_thread(self.client.query, query)
             for row in query_job:
                 existing_identifiers.add(row.identifier)
         except Exception as e:
             logger.debug(f"No existing identifiers found or error querying: {str(e)}")
+        return existing_identifiers
 
+    def _prepare_entity_row(self, entity: dict[str, Any], schema_fields: set[str]) -> dict[str, Any]:
+        """Prepare a single entity for insertion into BigQuery.
+
+        Args:
+            entity: The entity data to prepare.
+            schema_fields: Set of valid schema field names.
+
+        Returns:
+            Dictionary representing the row to insert.
+        """
+        row = {
+            "identifier": entity["identifier"],
+            "title": entity["title"],
+            "created_at": entity.get("createdAt"),
+            "updated_at": entity.get("updatedAt"),
+        }
+
+        # Add properties
+        for prop_name, prop_value in entity.get("properties", {}).items():
+            if prop_name in schema_fields:
+                row[prop_name] = prop_value
+
+        # Add relations
+        for relation_name, relation in entity.get("relations", {}).items():
+            if relation_name in schema_fields:
+                if isinstance(relation, str):
+                    row[relation_name] = relation
+                elif isinstance(relation, list):
+                    row[relation_name] = json.dumps(relation)
+
+        # Add calculation properties
+        for calc_name, calc_value in entity.get("calculationProperties", {}).items():
+            if calc_name in schema_fields:
+                row[calc_name] = calc_value
+
+        # Add aggregation properties
+        for agg_name, agg_value in entity.get("aggregationProperties", {}).items():
+            if agg_name in schema_fields:
+                row[agg_name] = agg_value
+
+        # Add mirror properties
+        for mirror_name, mirror_value in entity.get("mirrorProperties", {}).items():
+            if mirror_name in schema_fields:
+                row[mirror_name] = mirror_value
+
+        return row
+
+    async def _execute_bulk_update(self, table: bigquery.Table, rows_to_update: list[dict[str, Any]]) -> None:
+        """Execute a bulk update for multiple rows.
+
+        Args:
+            table: The BigQuery table to update.
+            rows_to_update: List of rows to update, each containing an identifier and field values.
+        """
+        if not rows_to_update:
+            return
+
+        # Group rows by their field sets to create more efficient UPDATE statements
+        field_sets: dict[frozenset[str], list[tuple[str, dict[str, Any]]]] = {}
+        for row in rows_to_update:
+            identifier = row.pop("identifier")
+            field_set = frozenset(row.keys())
+            if field_set not in field_sets:
+                field_sets[field_set] = []
+            field_sets[field_set].append((identifier, row))
+
+        # Create a mapping of field names to their types
+        field_types = {field.name: field.field_type for field in table.schema}
+
+        async def _execute_single_update(identifier: str, row: dict[str, Any], fields: list[str]) -> None:
+            """Execute a single update query.
+
+            Args:
+                identifier: The entity identifier to update.
+                row: Dictionary of field values to update.
+                fields: List of fields being updated.
+            """
+            update_query = f"""
+                UPDATE `{table.project}.{table.dataset_id}.{table.table_id}`
+                SET {', '.join(f"{field} = @{field}" for field in fields)}
+                WHERE identifier = @identifier
+            """
+
+            query_parameters = []
+            for field in fields:
+                field_type = field_types.get(field, "STRING")
+                value = row[field]
+                if field_type == "TIMESTAMP" and isinstance(value, str):
+                    from datetime import datetime
+
+                    value = datetime.fromisoformat(value.replace("Z", "+00:00"))
+                query_parameters.append(bigquery.ScalarQueryParameter(field, field_type, value))
+            query_parameters.append(bigquery.ScalarQueryParameter("identifier", "STRING", identifier))
+
+            job_config = bigquery.QueryJobConfig(query_parameters=query_parameters)
+
+            try:
+                query_job = await asyncio.to_thread(self.client.query, update_query, job_config)
+                await asyncio.to_thread(query_job.result)
+            except Exception as e:
+                logger.error(f"Error updating row with identifier {identifier}: {str(e)}")
+
+        # Process each field set sequentially to avoid serialization conflicts
+        for field_set, rows in field_sets.items():
+            fields = list(field_set)
+            logger.info(f"Processing {len(rows)} updates for field set: {fields}")
+
+            # Process updates sequentially within each field set
+            for identifier, row in rows:
+                await _execute_single_update(identifier, row, fields)
+
+            logger.info(f"Completed updates for field set: {fields}")
+
+    async def cleanup_duplicates(self, table_id: str) -> None:
+        """Remove duplicate rows, keeping the most recently updated version.
+
+        Args:
+            table_id: ID of the table to clean up.
+        """
+        table_ref = self.dataset_ref.table(table_id)
+        table = await asyncio.to_thread(self.client.get_table, table_ref)
+
+        cleanup_query = f"""
+            DELETE FROM `{table.project}.{table.dataset_id}.{table.table_id}` t1
+            WHERE EXISTS (
+                SELECT 1
+                FROM `{table.project}.{table.dataset_id}.{table.table_id}` t2
+                WHERE t1.identifier = t2.identifier
+                AND t1.updated_at < t2.updated_at
+            )
+        """
+        try:
+            query_job = await asyncio.to_thread(self.client.query, cleanup_query)
+            await asyncio.to_thread(query_job.result)
+            logger.info(f"Cleaned up duplicate rows in {table.table_id}")
+        except Exception as e:
+            logger.error(f"Error cleaning up duplicates in {table.table_id}: {str(e)}")
+
+    async def insert_entities(self, table_id: str, entities: list[dict[str, Any]]) -> None:
+        """Insert entities into a BigQuery table.
+
+        Args:
+            table_id: ID of the table to insert into.
+            entities: List of entities to insert.
+        """
+        table_ref = self.dataset_ref.table(table_id)
+        table = await asyncio.to_thread(self.client.get_table, table_ref)
+
+        # Get all field names from the table schema
+        schema_fields = {field.name for field in table.schema}
+
+        # Prepare rows for insertion
         rows_to_insert = []
-        rows_to_update = []
-        
         for entity in entities:
-            row = {
-                "identifier": entity["identifier"],
-                "title": entity["title"],
-                "created_at": entity.get("createdAt"),
-                "updated_at": entity.get("updatedAt"),
-            }
-            
-            # Add properties
-            for prop_name, prop_value in entity.get("properties", {}).items():
-                if prop_name in schema_fields:
-                    row[prop_name] = prop_value
-            
-            # Add relations
-            for relation_name, relation in entity.get("relations", {}).items():
-                if relation_name in schema_fields:
-                    if isinstance(relation, str):
-                        # Single relation
-                        row[relation_name] = relation
-                    elif isinstance(relation, list):
-                        # Many relations
-                        row[relation_name] = json.dumps(relation)
-            
-            # Add calculation properties
-            for calc_name, calc_value in entity.get("calculationProperties", {}).items():
-                if calc_name in schema_fields:
-                    row[calc_name] = calc_value
-            
-            # Add aggregation properties
-            for agg_name, agg_value in entity.get("aggregationProperties", {}).items():
-                if agg_name in schema_fields:
-                    row[agg_name] = agg_value
-            
-            # Add mirror properties
-            for mirror_name, mirror_value in entity.get("mirrorProperties", {}).items():
-                if mirror_name in schema_fields:
-                    row[mirror_name] = mirror_value
+            row = self._prepare_entity_row(entity, schema_fields)
+            rows_to_insert.append(row)
 
-            if entity["identifier"] in existing_identifiers:
-                rows_to_update.append(row)
-            else:
-                rows_to_insert.append(row)
+        logger.info(f"Inserting {len(rows_to_insert)} rows into {table_id}")
 
-        # Handle inserts
+        # Insert all rows
         if rows_to_insert:
-            errors = self.client.insert_rows_json(table, rows_to_insert)
+            errors = await asyncio.to_thread(self.client.insert_rows_json, table, rows_to_insert)
             if errors:
                 logger.error(f"Errors while inserting rows: {errors}")
             else:
                 logger.info(f"Successfully inserted {len(rows_to_insert)} rows into {table_id}")
-
-        # Handle updates with retry logic for streaming buffer
-        if rows_to_update:
-            import time
-            max_retries = 3
-            retry_delay = 5  # seconds
-            
-            for row in rows_to_update:
-                identifier = row.pop("identifier")
-                update_query = f"""
-                    UPDATE `{table.project}.{table.dataset_id}.{table.table_id}`
-                    SET {', '.join(f"{k} = @{k}" for k in row.keys())}
-                    WHERE identifier = @identifier
-                """
-                
-                # Create a mapping of field names to their types
-                field_types = {field.name: field.field_type for field in table.schema}
-                
-                # Create query parameters with correct types
-                query_parameters = []
-                for k, v in row.items():
-                    field_type = field_types.get(k, "STRING")  # Default to STRING if type not found
-                    if field_type == "TIMESTAMP" and isinstance(v, str):
-                        # Convert string timestamps to datetime
-                        from datetime import datetime
-                        v = datetime.fromisoformat(v.replace('Z', '+00:00'))
-                    query_parameters.append(
-                        bigquery.ScalarQueryParameter(k, field_type, v)
-                    )
-                query_parameters.append(
-                    bigquery.ScalarQueryParameter("identifier", "STRING", identifier)
-                )
-                
-                job_config = bigquery.QueryJobConfig(
-                    query_parameters=query_parameters
-                )
-                
-                # Retry logic for streaming buffer
-                for attempt in range(max_retries):
-                    try:
-                        # Try to flush the streaming buffer before update
-                        self._flush_streaming_buffer(table_ref)
-                        query_job = self.client.query(update_query, job_config=job_config)
-                        query_job.result()  # Wait for the query to complete
-                        break  # Success, exit retry loop
-                    except Exception as e:
-                        if "streaming buffer" in str(e) and attempt < max_retries - 1:
-                            logger.warning(f"Streaming buffer conflict for {identifier}, retrying in {retry_delay} seconds...")
-                            time.sleep(retry_delay)
-                            retry_delay *= 2  # Exponential backoff
-                        else:
-                            logger.error(f"Error updating row with identifier {identifier}: {str(e)}")
-                            break
-            logger.info(f"Completed update attempts for {len(rows_to_update)} rows in {table_id}")

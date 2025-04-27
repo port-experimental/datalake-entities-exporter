@@ -1,4 +1,3 @@
-from . import port
-from . import bigquery
+from . import bigquery, port
 
 __all__ = ["port", "bigquery"]
