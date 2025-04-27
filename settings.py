@@ -1,10 +1,9 @@
-import json
 from pathlib import Path
 from typing import Any, Literal, cast
 
 from dotenv import load_dotenv
-from google.oauth2 import service_account, credentials
 from google.auth import exceptions
+from google.oauth2 import credentials, service_account
 from pydantic import BaseModel
 from pydantic_settings import BaseSettings
 
@@ -51,9 +50,7 @@ class Settings(BaseSettings):
         if self.GOOGLE_APPLICATION_CREDENTIALS_JSON:
             return cast(
                 credentials.Credentials,
-                service_account.Credentials.from_service_account_info(
-                    self.GOOGLE_APPLICATION_CREDENTIALS_JSON
-                ),
+                service_account.Credentials.from_service_account_info(self.GOOGLE_APPLICATION_CREDENTIALS_JSON),
             )
         elif self.GOOGLE_APPLICATION_CREDENTIALS:
             try:
