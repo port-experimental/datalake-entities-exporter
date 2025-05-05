@@ -400,6 +400,12 @@ class BigQueryClient:
         Returns:
             Dictionary representing the row to insert.
         """
+        def _convert_boolean_to_string(value: Any) -> Any:
+            """Convert boolean values to strings, leave other values unchanged."""
+            if isinstance(value, bool):
+                return str(value).lower()
+            return value
+
         row = {
             "identifier": entity["identifier"],
             "title": entity["title"],
@@ -423,17 +429,17 @@ class BigQueryClient:
         # Add calculation properties
         for calc_name, calc_value in entity.get("calculationProperties", {}).items():
             if calc_name in schema_fields:
-                row[calc_name] = calc_value
+                row[calc_name] = _convert_boolean_to_string(calc_value)
 
         # Add aggregation properties
         for agg_name, agg_value in entity.get("aggregationProperties", {}).items():
             if agg_name in schema_fields:
-                row[agg_name] = agg_value
+                row[agg_name] = _convert_boolean_to_string(agg_value)
 
         # Add mirror properties
         for mirror_name, mirror_value in entity.get("mirrorProperties", {}).items():
             if mirror_name in schema_fields:
-                row[mirror_name] = mirror_value
+                row[mirror_name] = _convert_boolean_to_string(mirror_value)
 
         return row
 
