@@ -1,6 +1,6 @@
 [tool.poetry]
 name = "datalake-exporter"
-version = "0.1.0"
+version = "0.1.1"
 description = "A tool for exporting Port entities to BigQuery"
 authors = ["Your Name <your.email@example.com>"]
 package-mode = false
