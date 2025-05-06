@@ -22,6 +22,6 @@ COPY pyproject.toml poetry.lock ./
 
 RUN poetry install --without dev --no-root --no-interaction --no-ansi
 
-COPY . .
+COPY datalake_exporter/ .
 
 ENTRYPOINT ["python", "main.py"]

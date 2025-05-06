@@ -39,4 +39,4 @@ lint:
 	@poetry run mypy .
 
 run:
-	@poetry run python main.py
+	@poetry run python datalake_exporter/main.py
