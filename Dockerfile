@@ -1,7 +1,7 @@
 FROM python:3.12-slim
 
-ENV PYTHONDONTWRITEBYTECODE 1
-ENV PYTHONUNBUFFERED 1
+ENV PYTHONDONTWRITEBYTECODE=1
+ENV PYTHONUNBUFFERED=1
 
 
 RUN apt-get update \
@@ -20,8 +20,8 @@ RUN poetry config virtualenvs.create false
 
 COPY pyproject.toml poetry.lock ./
 
-RUN poetry install --without dev --no-root --no-interaction --no-ansi --no-cache
+RUN poetry install --without dev --no-root --no-interaction --no-ansi
 
 COPY . .
 
-ENTRYPOINT ["poetry", "run", "python", "main.py"]
+ENTRYPOINT ["python", "main.py"]
